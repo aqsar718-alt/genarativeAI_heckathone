@@ -1,0 +1,12 @@
+{
+    "training_date": "2025-11-21T21:28:47.685713",
+    "rows_used": 7556,
+    "features": [
+        "radius",
+        "mass",
+        "orbit_distance",
+        "star_temperature",
+        "earth_similarity_score"
+    ],
+    "test_accuracy": 0.9907407407407407
+}
