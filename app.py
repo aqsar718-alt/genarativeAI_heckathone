@@ -5,7 +5,9 @@ import joblib
 import json
 import os
 import time
-from PIL import Image
+import google.generativeai as genai
+from PIL import Image 
+
 
 # Page Config
 st.set_page_config(
@@ -98,6 +100,19 @@ MODEL_FILE = "model_pipeline.pkl"
 METADATA_FILE = "metadata.json"
 ASSETS_DIR = "assets"
 
+# Gemini API Configuration
+GENAI_API_KEY = "AIzaSyBLIikLFCKy0qR9G1AJd9A1Kjzmx6wWJU0"
+genai.configure(api_key=GENAI_API_KEY)
+
+def query_gemini(prompt):
+    try:
+        model = genai.GenerativeModel('gemini-1.5-flash')
+        response = model.generate_content(prompt)
+        return response.text
+    except Exception as e:
+        print(f"Gemini API Error: {e}")
+        return None
+
 @st.cache_resource
 def load_model():
     if os.path.exists(MODEL_FILE):
@@ -142,12 +157,13 @@ def get_planet_image(prediction, temp, radius):
 
 def generate_ai_explanation(inputs, prediction, proba):
     """
-    Simulates a Generative AI response with scientific reasoning.
+    Generates an explanation using Hugging Face API with a fallback to rule-based logic.
     """
     radius = inputs['radius']
     orbit = inputs['orbit_distance']
     temp = inputs['star_temperature']
     
+    # 1. Prepare Rule-Based Fallback (in case API fails)
     # HZ Calculation
     lum = (temp / 5778)**4
     hz_in = 0.95 * np.sqrt(lum)
@@ -156,7 +172,6 @@ def generate_ai_explanation(inputs, prediction, proba):
     reasons_ur = []
     reasons_en = []
     
-    # Detailed Logic
     if orbit < hz_in:
         reasons_ur.append("orbit distance bohat kam hai, jis se satah ka darja hararat bohat ziyada hoga")
         reasons_en.append("the orbit is too close to the host star, likely resulting in surface temperatures too high for liquid water")
@@ -174,7 +189,6 @@ def generate_ai_explanation(inputs, prediction, proba):
         reasons_ur.append("radius Earth se chota hai, atmosphere shayad weak ho")
         reasons_en.append("the radius is smaller than Earth's, which might imply a thin atmosphere unable to retain heat")
         
-    # Constructing the narrative
     if prediction == 1:
         intro_ur = "Khushkhabri! AI analysis ke mutabiq, yeh planet life support kar sakta hai."
         intro_en = "Good news! Based on AI analysis, this planet is a strong candidate for habitability."
@@ -184,10 +198,74 @@ def generate_ai_explanation(inputs, prediction, proba):
         intro_en = "Unfortunately, AI analysis suggests this planet is likely hostile to life."
         status = "Not Habitable"
 
-    urdu_text = f"{intro_ur} {', aur '.join(reasons_ur)}."
-    eng_text = f"{intro_en} Specifically, {', and '.join(reasons_en)}."
+    fallback_urdu = f"{intro_ur} {', aur '.join(reasons_ur)}."
+    fallback_eng = f"{intro_en} Specifically, {', and '.join(reasons_en)}."
+
+    # 2. Try Gemini API
+    try:
+        gravity = inputs['mass'] / (inputs['radius']**2)
+        esi = inputs['esi']
+        mass = inputs['mass']
+        
+        prompt = f"""
+        [ROLE] You are a highly professional Astro-Analyst. Your task is to analyze the exoplanet data below and generate a comprehensive, structured mission report.
+
+        [PLANET DATA]
+        - Status: {status} (Confidence: {proba:.1%})
+        - ESI Score: {esi:.1f}/100
+        - Estimated Gravity: {gravity:.2f}g (Earth is 1.0g)
+        - Planet Radius: {radius} Earth Radii
+        - Planet Mass: {mass} Earth Masses
+        - Orbit Distance: {orbit} AU
+        - Star Temperature: {temp} K
+
+        [OUTPUT STRUCTURE]
+        Your entire response MUST strictly follow the three headings below. Do not add any extra text, introductory phrases, or conversation outside of these three sections.
+
+        **1. NAME:** Generate a single, unique, and scientifically plausible designation name for this planet (e.g., 'Volcanus Prime', 'Terra Nova-6', or 'Icefang').
+        **2. ENGLISH ANALYSIS:** Write a 4-sentence scientific analysis. 
+            * **Sentence 1:** State the primary challenge or advantage (e.g., extremely high surface gravity, or perfectly within the Habitable Zone).
+            * **Sentence 2:** Explain the ESI score and what it implies for habitability compared to Earth.
+            * **Sentence 3:** Briefly discuss the impact of the Star Temperature and Orbit on potential liquid water.
+            * **Sentence 4:** Suggest a preliminary scientific mission based on the data (e.g., 'Atmospheric composition probe recommended' or 'Long-duration orbital survey advised').
+        **3. ROMAN URDU ANALYSIS:** Write a 4-sentence analysis explaining the same points in simple, clear Roman Urdu.
+            * **Sentence 1:** Batao ke yahan zindagi ke liye **sabse bari rukawat ya faida** kya hai.
+            * **Sentence 2:** ESI score ka matlab kya hai aur iski wajah se yeh Earth se kitna milta hai.
+            * **Sentence 3:** Star ki garmi aur iske faasle (orbit) ka pani (liquid water) par kya asar hoga.
+            * **Sentence 4:** Aage kya karna chahiye—ek **mission ka mashwara** do (jaise, 'Ek behtareen telescope se iski tasveer leni chahiye')
+        """
+        
+        generated_text = query_gemini(prompt)
+        
+        if generated_text:
+            # Robust parsing for the new format
+            generated_name = "Unknown"
+            eng_text = fallback_eng
+            urdu_text = fallback_urdu
+            
+            try:
+                # Split by the headers
+                parts = generated_text.split("**1. NAME:**")
+                if len(parts) > 1:
+                    remaining = parts[1]
+                    name_parts = remaining.split("**2. ENGLISH ANALYSIS:**")
+                    if len(name_parts) > 1:
+                        generated_name = name_parts[0].strip()
+                        analysis_parts = name_parts[1].split("**3. ROMAN URDU ANALYSIS:**")
+                        if len(analysis_parts) > 1:
+                            eng_text = analysis_parts[0].strip()
+                            urdu_text = analysis_parts[1].strip()
+                            return status, urdu_text, eng_text, generated_name
+            except:
+                pass
+                
+            return status, urdu_text, eng_text, generated_name
+                
+    except Exception as e:
+        pass
     
-    return status, urdu_text, eng_text
+    # Return fallback if API fails
+    return status, fallback_urdu, fallback_eng, "Unknown"
 
 def main():
     # Sidebar - Mission Control
@@ -211,7 +289,7 @@ def main():
         
     # Main Content
     st.title("🌌 ExoHunter AI")
-    st.markdown("### Generative Exoplanet Analysis System")
+    st.markdown("### Generative Exoplanet Analysis System <span style='font-size: 0.8em; background: linear-gradient(90deg, #4285F4, #9B72CB); -webkit-background-clip: text; -webkit-text-fill-color: transparent; font-weight: bold;'>⚡ Powered by Gemini</span>", unsafe_allow_html=True)
     
     pipeline = load_model()
     if not pipeline:
@@ -234,7 +312,9 @@ def main():
         }
         
         selected_preset = st.selectbox("", list(example_planets.keys()), label_visibility="collapsed")
-        defaults = example_planets.get(selected_preset, {"radius": 1.0, "mass": 1.0, "orbit": 1.0, "temp": 5778})
+        defaults = example_planets.get(selected_preset)
+        if defaults is None:
+            defaults = {"radius": 1.0, "mass": 1.0, "orbit": 1.0, "temp": 5778}
         
         with st.form("analysis_form"):
             name = st.text_input("Planet Designation", value="Proxima Centauri b")
@@ -249,65 +329,101 @@ def main():
                 
             analyze_btn = st.form_submit_button("🚀 Initiate Analysis")
 
-    with col2:
-        if analyze_btn:
-            # Processing Animation
-            with st.spinner("Running Neural Net Simulations..."):
-                time.sleep(1.5) # Dramatic pause for effect
-                
-                # Calculations
-                esi = calculate_esi(radius, mass, orbit)
-                input_data = pd.DataFrame([[radius, mass, orbit, temp, esi]], 
-                                        columns=['radius', 'mass', 'orbit_distance', 'star_temperature', 'earth_similarity_score'])
-                
-                prediction = pipeline.predict(input_data)[0]
-                proba = pipeline.predict_proba(input_data)[0][1]
-                
-                status, urdu_exp, eng_exp = generate_ai_explanation(
-                    {'radius': radius, 'orbit_distance': orbit, 'star_temperature': temp}, 
-                    prediction, proba
-                )
-                
-                img_path = get_planet_image(prediction, temp, radius)
+    if analyze_btn:
+        with st.spinner("Running Neural Net Simulations..."):
+            time.sleep(1.5)
+            
+            # Calculations
+            esi = calculate_esi(radius, mass, orbit)
+            input_data = pd.DataFrame([[radius, mass, orbit, temp, esi]], 
+                                    columns=['radius', 'mass', 'orbit_distance', 'star_temperature', 'earth_similarity_score'])
+            
+            prediction = pipeline.predict(input_data)[0]
+            proba = pipeline.predict_proba(input_data)[0][1]
+            
+            status, urdu_exp, eng_exp, ai_name = generate_ai_explanation(
+                {'radius': radius, 'orbit_distance': orbit, 'star_temperature': temp, 'mass': mass, 'esi': esi}, 
+                prediction, proba
+            )
+            
+            img_path = get_planet_image(prediction, temp, radius)
+            
+            # Store in Session State
+            st.session_state['analysis_results'] = {
+                'name': name,
+                'ai_name': ai_name,
+                'radius': radius,
+                'mass': mass,
+                'orbit': orbit,
+                'temp': temp,
+                'esi': esi,
+                'prediction': prediction,
+                'proba': proba,
+                'status': status,
+                'urdu_exp': urdu_exp,
+                'eng_exp': eng_exp,
+                'img_path': img_path
+            }
 
+
+    with col2:
+        if 'analysis_results' in st.session_state:
+            results = st.session_state['analysis_results']
+            
             # Results Display
-            st.markdown(f"### Analysis Result: {name}")
+            display_name = results['ai_name'] if results['ai_name'] != "Unknown" else results['name']
+            st.markdown(f"### Analysis Result: {display_name}")
+            if results['ai_name'] != "Unknown" and results['ai_name'] != results['name']:
+                st.caption(f"User Designation: {results['name']}")
             
             # Dynamic Image
-            if os.path.exists(img_path):
-                st.image(img_path, caption="Generative Visualization of Surface Conditions", use_container_width=True)
+            if os.path.exists(results['img_path']):
+                st.image(results['img_path'], caption="Generative Visualization of Surface Conditions", use_container_width=True)
             
             # Status Banner
-            if prediction == 1:
+            if results['prediction'] == 1:
                 st.markdown(f"""
                 <div class="success-box">
                     <h3>🌱 HABITABLE</h3>
-                    <p>Confidence: {proba:.1%}</p>
+                    <p>Confidence: {results['proba']:.1%}</p>
                 </div>
                 """, unsafe_allow_html=True)
-                st.balloons()
+                if analyze_btn: # Only show balloons on fresh run
+                    st.balloons()
             else:
                 st.markdown(f"""
                 <div class="danger-box">
                     <h3>💀 NOT HABITABLE</h3>
-                    <p>Confidence: {(1-proba):.1%}</p>
+                    <p>Confidence: {(1-results['proba']):.1%}</p>
                 </div>
                 """, unsafe_allow_html=True)
 
             # Metrics Row
             m1, m2, m3 = st.columns(3)
-            m1.metric("ESI Score", f"{esi:.1f}", delta="Earth Similarity")
-            m2.metric("Orbit Type", "Goldilocks" if "habitable zone" in eng_exp else "Extreme")
-            m3.metric("Est. Gravity", f"{(mass/radius**2):.2f}g")
+            m1.metric("ESI Score", f"{results['esi']:.1f}", delta="Earth Similarity")
+            m2.metric("Orbit Type", "Goldilocks" if "habitable zone" in results['eng_exp'] else "Extreme")
+            m3.metric("Est. Gravity", f"{(results['mass']/results['radius']**2):.2f}g")
 
             # AI Explanation Tab
             st.markdown("#### 🧠 AI Mission Report")
             tab1, tab2 = st.tabs(["🇬🇧 English Analysis", "🇵🇰 Roman Urdu Analysis"])
             
             with tab1:
-                st.markdown(f"**Mission Log:** {eng_exp}")
+                st.markdown(f"""
+                <div style="background: rgba(66, 133, 244, 0.1); border-left: 3px solid #4285F4; padding: 15px; border-radius: 5px;">
+                    <strong style="color: #4285F4;">Gemini Analysis:</strong><br>
+                    <span style="font-family: 'Courier New', monospace;">{results['eng_exp']}</span>
+                </div>
+                """, unsafe_allow_html=True)
             with tab2:
-                st.markdown(f"**Mission Log:** {urdu_exp}")
+                st.markdown(f"""
+                <div style="background: rgba(155, 114, 203, 0.1); border-left: 3px solid #9B72CB; padding: 15px; border-radius: 5px;">
+                    <strong style="color: #9B72CB;">Roman Urdu Log:</strong><br>
+                    <span style="font-family: 'Courier New', monospace;">{results['urdu_exp']}</span>
+                </div>
+                """, unsafe_allow_html=True)
+
+
                 
         else:
             # Idle State
@@ -324,3 +440,14 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+
+
+
+
+
+
+
+
+
